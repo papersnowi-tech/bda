@@ -6,18 +6,17 @@ st.set_page_config(page_title="Business Crisis Control", layout="wide")
 
 @st.cache_data
 def load_data():
-    # Ielādējam bez papildu iestatījumiem
     df = pd.read_csv('dashboard_data.csv')
     tix = pd.read_csv('dashboard_tickets.csv')
     
-    # Piespiedu kārtā pārvēršam kolonnas par datumiem, ignorējot kļūdas
+    # 1. Stingra datumu konvertēšana
     date_col = 'Order_Date' if 'Order_Date' in df.columns else df.columns[0]
     df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
     tix['Date_Logged'] = pd.to_datetime(tix['Date_Logged'], errors='coerce')
     
-    # Ja datums nav ielādējies, piešķiram fiktīvu šodienas datumu, lai filtrs neizmet datus
-    df[date_col] = df[date_col].fillna(pd.Timestamp('2023-11-20'))
-    tix['Date_Logged'] = tix['Date_Logged'].fillna(pd.Timestamp('2023-11-20'))
+    # 2. Aizpildām tukšumus, ja tādi radušies, lai filtrs neizmet datus
+    df[date_col] = df[date_col].fillna(pd.Timestamp('2023-12-01'))
+    tix['Date_Logged'] = tix['Date_Logged'].fillna(pd.Timestamp('2023-12-01'))
     
     return df, tix, date_col
 
@@ -30,32 +29,45 @@ kategorijas = st.sidebar.multiselect("Izvēlies kategorijas:",
                                      options=df[cat_col].unique(), 
                                      default=df[cat_col].unique())
 
-# Datuma izvēle (bet mēs to izmantosim uzmanīgi)
-date_range = st.sidebar.date_input("Analīzes periods:", 
-                                   [pd.Timestamp('2023-01-01'), pd.Timestamp('2025-12-31')])
+# Datuma filtrs - iestatām noklusējuma vērtības no datiem
+start_init = df[date_col].min().date()
+end_init = df[date_col].max().date()
+date_range = st.sidebar.date_input("Analīzes periods:", [start_init, end_init])
 
-# FILTRĒŠANA (Tikai pēc kategorijām, lai dati nepazustu)
-df_f = df[df[cat_col].isin(kategorijas)]
-tix_f = tix.copy()
+# --- FILTRĒŠANAS LOĢIKA (SVARĪGI!) ---
+if len(date_range) == 2:
+    start_d, end_d = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+    
+    # Filtrējam abus datu rāmjus pēc laika UN kategorijas
+    df_f = df[(df[cat_col].isin(kategorijas)) & 
+              (df[date_col] >= start_d) & 
+              (df[date_col] <= end_d)]
+    
+    tix_f = tix[(tix['Date_Logged'] >= start_d) & 
+                (tix['Date_Logged'] <= end_d)]
+else:
+    df_f = df[df[cat_col].isin(kategorijas)]
+    tix_f = tix.copy()
 
-# --- REZULTĀTI ---
+# --- REZULTĀTU ATTĒLOŠANA ---
 st.title("🚨 Biznesa procesu krīzes vadības panelis")
 
-# Pārbaude - ja dati ir, rādām!
-if not df_f.empty:
-    # KPI
+if df_f.empty and tix_f.empty:
+    st.warning("⚠️ Šajā periodā datu nav. Pamēģini paplašināt laika filtru!")
+else:
+    # KPI Rinda
     k1, k2, k3 = st.columns(3)
     k1.metric("Kopējie ieņēmumi", f"{df_f['Total_Value'].sum():,.2f} €")
-    k2.metric("Atgriezumu zaudējumi", f"{df_f['Refund_Amount_Clean'].sum():,.2f} €")
+    refund_col = 'Refund_Amount_Clean'
+    k2.metric("Atgriezumu zaudējumi", f"{df_f[refund_col].sum():,.2f} €", delta_color="inverse")
     k3.metric("Sūdzību skaits", len(tix_f))
 
     st.divider()
 
-    # GRAFIKI
+    # Grafiku rinda 1
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("📈 Sūdzību dinamika")
-        # Vienkāršots laika grafiks
         t_graph = tix_f.groupby(tix_f['Date_Logged'].dt.date).size().reset_index(name='Skaits')
         fig_l = px.line(t_graph, x='Date_Logged', y='Skaits', color_discrete_sequence=['red'])
         st.plotly_chart(fig_l, use_container_width=True)
@@ -66,15 +78,14 @@ if not df_f.empty:
         fig_p = px.pie(tix_f, names=t_col, hole=0.4, color_discrete_sequence=px.colors.sequential.Reds_r)
         st.plotly_chart(fig_p, use_container_width=True)
 
+    # Grafiku rinda 2
     c3, c4 = st.columns(2)
     with c3:
         st.subheader("❌ Top zaudējumu produkti")
-        l_data = df_f.groupby('Product_Name')['Refund_Amount_Clean'].sum().sort_values(ascending=False).head(10).reset_index()
-        fig_b = px.bar(l_data, x='Refund_Amount_Clean', y='Product_Name', orientation='h', color_continuous_scale='Reds')
+        l_data = df_f.groupby('Product_Name')[refund_col].sum().sort_values(ascending=False).head(10).reset_index()
+        fig_b = px.bar(l_data, x=refund_col, y='Product_Name', orientation='h', color_continuous_scale='Reds')
         st.plotly_chart(fig_b, use_container_width=True)
     
     with c4:
         st.subheader("🚨 Krīzes sūdzību detaļas")
         st.dataframe(tix_f[['Date_Logged', 'Subject', t_col]].head(10), use_container_width=True)
-else:
-    st.error("Dati joprojām nav ielādēti. Pārbaudi, vai GitHubā ir ielikti dashboard_data.csv un dashboard_tickets.csv!")
